@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == --help ]]; then
+  printf '%s\n' 'Usage: codex-autodl [Codex arguments]' 'Remote Linux only. Requires codex, curl, screen and an existing loopback HTTP proxy.' 'Overrides: CODEX_WORKDIR, CODEX_PROXY_PORT (7891), CODEX_SCREEN_SESSION (codex).'
+  exit 0
+fi
+proxy_port="${CODEX_PROXY_PORT:-7891}"
+session="${CODEX_SCREEN_SESSION:-codex}"
+workdir="${CODEX_WORKDIR:-$PWD}"
+[[ "$proxy_port" =~ ^[0-9]{1,5}$ ]] && ((10#$proxy_port > 0 && 10#$proxy_port <= 65535)) || { echo 'Invalid proxy port' >&2; exit 2; }
+[[ "$session" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid screen session name' >&2; exit 2; }
+[[ -d "$workdir" ]] || { echo 'Work directory does not exist' >&2; exit 2; }
+for tool in codex curl screen; do
+  command -v "$tool" >/dev/null || { printf 'Missing dependency: %s\n' "$tool" >&2; exit 3; }
+done
+export HTTP_PROXY="http://127.0.0.1:$proxy_port" HTTPS_PROXY="http://127.0.0.1:$proxy_port"
+export http_proxy="$HTTP_PROXY" https_proxy="$HTTPS_PROXY"
+# Clear no_proxy for this check so the requested endpoint actually uses the tunnel.
+curl --noproxy '' -x "$HTTP_PROXY" -I -sS --connect-timeout 8 --max-time 20 https://chatgpt.com >/dev/null || { echo 'Proxy check failed; repair the local proxy and reverse tunnel first.' >&2; exit 4; }
+cd "$workdir"
+# Let screen handle attached-session conflicts; never force-detach another terminal.
+exec screen -S "$session" -R codex "$@"

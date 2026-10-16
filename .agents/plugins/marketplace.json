@@ -1,0 +1,20 @@
+{
+  "name": "sg-audex",
+  "interface": {
+    "displayName": "sg-audex plugins"
+  },
+  "plugins": [
+    {
+      "name": "autodl-codex",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

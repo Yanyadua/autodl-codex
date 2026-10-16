@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+host=""
+port=""
+user="root"
+identity="${HOME}/.ssh/id_rsa"
+fresh_tests=3
+reuse_tests=5
+idle_seconds=0
+accept_new=0
+
+usage() {
+  cat <<'EOF'
+Usage:
+  autodl-ssh-check --host HOST --port PORT [options]
+
+Options:
+  --user USER          SSH user (default: root)
+  --identity PATH      Private key (default: ~/.ssh/id_rsa)
+  --fresh-tests N      Number of independent connections (default: 3)
+  --reuse-tests N      Commands over one master connection (default: 5)
+  --idle-seconds N     Idle-session test duration (default: 0, disabled)
+  --accept-new         Add a new host key after independent verification
+  -h, --help           Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host) host="${2:?missing host}"; shift 2 ;;
+    --port) port="${2:?missing port}"; shift 2 ;;
+    --user) user="${2:?missing user}"; shift 2 ;;
+    --identity) identity="${2:?missing identity}"; shift 2 ;;
+    --fresh-tests) fresh_tests="${2:?missing count}"; shift 2 ;;
+    --reuse-tests) reuse_tests="${2:?missing count}"; shift 2 ;;
+    --idle-seconds) idle_seconds="${2:?missing seconds}"; shift 2 ;;
+    --accept-new) accept_new=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$host" || -z "$port" ]]; then
+  usage >&2
+  exit 2
+fi
+[[ "$host" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ && "$host" == *.autodl.pro ]] || { echo 'Expected an AutoDL hostname' >&2; exit 2; }
+[[ "$user" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] || { echo 'Invalid user' >&2; exit 2; }
+[[ "$port" =~ ^[0-9]{1,5}$ ]] && ((10#$port > 0 && 10#$port <= 65535)) || { echo 'Invalid port' >&2; exit 2; }
+for count in "$fresh_tests" "$reuse_tests" "$idle_seconds"; do
+  [[ "$count" =~ ^(0|[1-9][0-9]{0,5})$ ]] || { echo 'Invalid test count/duration' >&2; exit 2; }
+done
+((fresh_tests > 0 && reuse_tests > 0)) || { echo 'Fresh and reuse counts must be positive' >&2; exit 2; }
+if [[ ! -f "$identity" ]]; then
+  printf 'Identity file not found: %s\n' "$identity" >&2
+  exit 3
+fi
+if ! command -v curl >/dev/null || ! command -v python3 >/dev/null; then
+  printf 'curl and python3 are required\n' >&2
+  exit 4
+fi
+
+system_ip="$(python3 - "$host" <<'PY'
+import socket, sys
+try:
+    print(socket.gethostbyname(sys.argv[1]))
+except OSError:
+    print("unresolved")
+PY
+)"
+
+doh_json="$(curl -fsS --max-time 15 \
+  "https://dns.google/resolve?name=${host}&type=A")"
+real_ip="$(printf '%s' "$doh_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+answers = [x["data"] for x in data.get("Answer", []) if x.get("type") == 1]
+if not answers:
+    raise SystemExit("HTTPS DNS returned no A record")
+import ipaddress
+address = ipaddress.ip_address(answers[0])
+if address.version != 4 or not address.is_global:
+    raise SystemExit("HTTPS DNS returned a non-public address")
+print(address)
+')"
+
+printf 'system_dns=%s\nhttps_dns=%s\n' "$system_ip" "$real_ip"
+if [[ "$real_ip" == 198.18.* || "$real_ip" == 198.19.* ]]; then
+  printf 'Refusing Fake-IP address: %s\n' "$real_ip" >&2
+  exit 5
+fi
+if [[ "$system_ip" == 198.18.* || "$system_ip" == 198.19.* ]]; then
+  printf 'diagnosis=system DNS is intercepted by a TUN/Fake-IP proxy\n'
+fi
+
+alias_name="[${host}]:${port}"
+strict_mode="yes"
+if ! ssh-keygen -F "$alias_name" -f "${HOME}/.ssh/known_hosts" >/dev/null 2>&1; then
+  if [[ "$accept_new" -eq 1 ]]; then
+    strict_mode="accept-new"
+    printf 'warning=no existing host key; independently verify the new fingerprint\n'
+  else
+    printf 'No known_hosts entry for %s. Verify the fingerprint, then rerun with --accept-new.\n' \
+      "$alias_name" >&2
+    exit 6
+  fi
+fi
+
+common=(
+  -o ControlMaster=no
+  -o ControlPath=none
+  -o BatchMode=yes
+  -o "Hostname=${real_ip}"
+  -o "HostKeyAlias=${alias_name}"
+  -o "StrictHostKeyChecking=${strict_mode}"
+  -o ConnectTimeout=10
+  -o ConnectionAttempts=1
+  -o ServerAliveInterval=15
+  -o ServerAliveCountMax=3
+  -o IdentitiesOnly=yes
+  -i "$identity"
+  -p "$port"
+)
+target="${user}@${host}"
+
+for ((i=1; i<=fresh_tests; i++)); do
+  output="$(ssh "${common[@]}" "$target" 'printf "%s " "$(hostname)"; date +%s')"
+  printf 'fresh=%d/%d result=OK remote=%s\n' "$i" "$fresh_tests" "$output"
+done
+
+scratch="$(mktemp -d /tmp/autodl-ssh-check.XXXXXX)"
+socket="${scratch}/cm"
+reuse_log="${scratch}/reuse.log"
+cleanup() {
+  ssh -o "ControlPath=${socket}" "${common[@]}" -O exit "$target" >/dev/null 2>&1 || true
+  rm -f "$socket" "$reuse_log"
+  rmdir "$scratch"
+}
+trap cleanup EXIT
+
+if [[ "$reuse_tests" -gt 0 ]]; then
+  output="$(ssh -o ControlMaster=yes -o ControlPersist=120 -o "ControlPath=${socket}" \
+    "${common[@]}" \
+    "$target" 'printf "%s " "$(hostname)"; date +%s')"
+  printf 'reuse=1/%d result=OK master=created remote=%s\n' "$reuse_tests" "$output"
+  ssh -o "ControlPath=${socket}" "${common[@]}" -O check "$target"
+
+  for ((i=2; i<=reuse_tests; i++)); do
+    : > "$reuse_log"
+    output="$(ssh -vv -o ControlMaster=no -o "ControlPath=${socket}" \
+      "${common[@]}" \
+      "$target" 'printf "%s " "$(hostname)"; date +%s' 2>"$reuse_log")"
+    if ! grep -q 'mux_client_request_session' "$reuse_log"; then
+      printf 'Reuse test %d silently opened a fresh connection\n' "$i" >&2
+      exit 7
+    fi
+    if grep -q 'Master refused session request' "$reuse_log"; then
+      printf 'Reuse test %d was refused by the master connection\n' "$i" >&2
+      exit 8
+    fi
+    printf 'reuse=%d/%d result=OK master=reused remote=%s\n' \
+      "$i" "$reuse_tests" "$output"
+  done
+fi
+
+if [[ "$idle_seconds" -gt 0 ]]; then
+  output="$(ssh "${common[@]}" "$target" \
+    "printf 'idle_start '; date +%s; sleep ${idle_seconds}; printf 'idle_end '; date +%s")"
+  printf 'idle=%ss result=OK remote=%s\n' "$idle_seconds" "$output"
+fi
+
+printf 'CHECKS_PASSED host=%s real_ip=%s port=%s\n' "$host" "$real_ip" "$port"

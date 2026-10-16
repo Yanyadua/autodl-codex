@@ -1,0 +1,48 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "autodl-codex",
+  "version": "1.0.0",
+  "description": "Connect to AutoDL GPU instances and set up recoverable Codex CLI sessions.",
+  "author": {
+    "name": "sg-audex"
+  },
+  "keywords": [
+    "autodl",
+    "ssh",
+    "codex",
+    "gpu"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "AutoDL Codex",
+        "shortDescription": "AutoDL SSH and Codex setup",
+        "longDescription": "Set up and diagnose SSH access to your own AutoDL GPU instance, configure a loopback SSH reverse proxy when needed, install and authenticate Codex CLI, and recover terminal sessions. Built from experience with macOS, FlClash, and AutoDL Linux. Other clients require adaptation. Requires local terminal access, your own instance, and your own Codex login. This plugin does not provision GPUs or guarantee continuous uptime. No MCP service or telemetry is bundled. Independent community plugin; not affiliated with AutoDL or OpenAI.",
+        "developerName": "sg-audex",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Diagnose AutoDL SSH",
+          "Set up Codex CLI",
+          "Recover terminal sessions"
+        ],
+        "defaultPrompt": [
+          "Help me connect to my AutoDL instance and set up Codex CLI.",
+          "Diagnose my AutoDL SSH banner timeout.",
+          "Recover my Codex CLI session after an SSH disconnect."
+        ],
+        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/icon.svg"
+      },
+      "publication": {
+        "release_notes": "Initial release: AutoDL SSH diagnostics and recoverable Codex CLI workflows.",
+        "translations": {
+          "zh-CN": {
+            "subtitle": "连接 AutoDL 并配置 Codex CLI",
+            "description": "诊断 AutoDL SSH 连接，按需建立回环代理隧道，安装及登录 Codex CLI，保持终端会话并处理断线恢复。适用于有本地终端权限的 Codex 环境。基于 macOS、FlClash、AutoDL Linux 的使用经验；其他环境需要适配。需要使用者自己的实例和账号。本插件不提供 GPU，不保证永久在线，不包含遥测或 MCP 服务。社区独立插件。"
+          }
+        }
+      }
+    }
+  },
+  "repository": "https://github.com/Yanyadua/autodl-codex"
+}
